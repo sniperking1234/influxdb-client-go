@@ -10,7 +10,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"strings"
 	"sync"
@@ -27,9 +26,10 @@ type HTTPService struct {
 	lines          []string
 	t              *testing.T
 	wasGzip        bool
-	requestHandler func(c *HTTPService, url string, body io.Reader) error
+	requestHandler func(url string, body io.Reader) error
 	replyError     *http2.Error
 	lock           sync.Mutex
+	requests       int
 }
 
 // WasGzip returns true of request was in GZip format
@@ -40,6 +40,11 @@ func (t *HTTPService) WasGzip() bool {
 // SetWasGzip sets wasGzip flag
 func (t *HTTPService) SetWasGzip(wasGzip bool) {
 	t.wasGzip = wasGzip
+}
+
+// SetRequestHandler sets custom handler for requests
+func (t *HTTPService) SetRequestHandler(fn func(url string, body io.Reader) error) {
+	t.requestHandler = fn
 }
 
 // ServerURL returns testing URL
@@ -62,6 +67,11 @@ func (t *HTTPService) HTTPClient() *http.Client {
 	return nil
 }
 
+// Requests returns number of requests
+func (t *HTTPService) Requests() int {
+	return t.requests
+}
+
 // Close clears instance
 func (t *HTTPService) Close() {
 	t.lock.Lock()
@@ -71,6 +81,7 @@ func (t *HTTPService) Close() {
 	t.wasGzip = false
 	t.replyError = nil
 	t.requestHandler = nil
+	t.requests = 0
 	t.lock.Unlock()
 }
 
@@ -90,7 +101,6 @@ func (t *HTTPService) ReplyError() *http2.Error {
 
 // SetAuthorization sets authorization string
 func (t *HTTPService) SetAuthorization(_ string) {
-
 }
 
 // GetRequest does nothing for this service
@@ -111,6 +121,9 @@ func (t *HTTPService) DoHTTPRequestWithResponse(_ *http.Request, _ http2.Request
 // DoPostRequest reads http request, validates URL and stores data in the request
 func (t *HTTPService) DoPostRequest(_ context.Context, url string, body io.Reader, requestCallback http2.RequestCallback, _ http2.ResponseCallback) *http2.Error {
 	req, err := http.NewRequest("POST", url, nil)
+	t.lock.Lock()
+	t.requests++
+	t.lock.Unlock()
 	if err != nil {
 		return http2.NewError(err)
 	}
@@ -121,15 +134,17 @@ func (t *HTTPService) DoPostRequest(_ context.Context, url string, body io.Reade
 		body, _ = gzip.NewReader(body)
 		t.wasGzip = true
 	}
-	assert.Equal(t.t, fmt.Sprintf("%swrite?bucket=my-bucket&org=my-org&precision=ns", t.serverURL), url)
+	if t.t != nil {
+		assert.Equal(t.t, fmt.Sprintf("%swrite?bucket=my-bucket&org=my-org&precision=ns", t.serverURL), url)
+	}
 
 	if t.ReplyError() != nil {
 		return t.ReplyError()
 	}
 	if t.requestHandler != nil {
-		err = t.requestHandler(t, url, body)
+		err = t.requestHandler(url, body)
 	} else {
-		err = t.decodeLines(body)
+		err = t.DecodeLines(body)
 	}
 
 	if err != nil {
@@ -138,8 +153,9 @@ func (t *HTTPService) DoPostRequest(_ context.Context, url string, body io.Reade
 	return nil
 }
 
-func (t *HTTPService) decodeLines(body io.Reader) error {
-	bytes, err := ioutil.ReadAll(body)
+// DecodeLines parses request body for lines
+func (t *HTTPService) DecodeLines(body io.Reader) error {
+	bytes, err := io.ReadAll(body)
 	if err != nil {
 		return err
 	}

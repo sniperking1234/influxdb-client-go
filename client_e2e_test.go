@@ -18,6 +18,7 @@ import (
 	"time"
 
 	influxdb2 "github.com/influxdata/influxdb-client-go/v2"
+	"github.com/influxdata/influxdb-client-go/v2/api/http"
 	"github.com/influxdata/influxdb-client-go/v2/domain"
 	"github.com/influxdata/influxdb-client-go/v2/internal/test"
 	"github.com/influxdata/influxdb-client-go/v2/log"
@@ -293,7 +294,7 @@ func TestV2APIAgainstV1Server(t *testing.T) {
 
 func TestHTTPService(t *testing.T) {
 	client := influxdb2.NewClient(serverURL, authToken)
-	apiClient := domain.NewClientWithResponses(client.HTTPService())
+	apiClient := client.APIClient()
 	org, err := client.OrganizationsAPI().FindOrganizationByName(context.Background(), "my-org")
 	if err != nil {
 		//return err
@@ -314,17 +315,20 @@ from(bucket:"my-bucket") |> range(start: -1m) |> last()`
 		Flux:        taskFlux,
 		Status:      &taskStatus,
 	}
-	resp, err := apiClient.PostTasksWithResponse(context.Background(), &domain.PostTasksParams{}, domain.PostTasksJSONRequestBody(taskRequest))
+	params := &domain.PostTasksAllParams{
+		Body: domain.PostTasksJSONRequestBody(taskRequest),
+	}
+	resp, err := apiClient.PostTasks(context.Background(), params)
 	if err != nil {
 		//return err
 		t.Error(err)
 	}
-	if resp.JSONDefault != nil {
-		t.Error(resp.JSONDefault.Message)
-	}
-	if assert.NotNil(t, resp.JSON201) {
-		assert.Equal(t, "My task", resp.JSON201.Name)
-		_, err := apiClient.DeleteTasksID(context.Background(), resp.JSON201.Id, &domain.DeleteTasksIDParams{})
+	if assert.NotNil(t, resp) {
+		assert.Equal(t, "My task", resp.Name)
+		deleteParams := &domain.DeleteTasksIDAllParams{
+			TaskID: resp.Id,
+		}
+		err := apiClient.DeleteTasksID(context.Background(), deleteParams)
 		if err != nil {
 			//return err
 			t.Error(err)
@@ -364,4 +368,17 @@ func TestWriteCustomBatch(t *testing.T) {
 		l++
 	}
 	assert.Equal(t, 10, l)
+}
+
+func TestHttpHeadersInError(t *testing.T) {
+	client := influxdb2.NewClientWithOptions(serverURL, authToken, influxdb2.DefaultOptions().SetLogLevel(0))
+	err := client.WriteAPIBlocking("my-org", "my-bucket").WriteRecord(context.Background(), "asdf")
+	assert.Error(t, err)
+	assert.Len(t, err.(*http.Error).Header, 6)
+	assert.NotEqual(t, err.(*http.Error).Header.Get("Date"), "")
+	assert.NotEqual(t, err.(*http.Error).Header.Get("Content-Length"), "")
+	assert.NotEqual(t, err.(*http.Error).Header.Get("Content-Type"), "")
+	assert.NotEqual(t, err.(*http.Error).Header.Get("X-Platform-Error-Code"), "")
+	assert.Contains(t, err.(*http.Error).Header.Get("X-Influxdb-Version"), "v")
+	assert.Equal(t, err.(*http.Error).Header.Get("X-Influxdb-Build"), "OSS")
 }

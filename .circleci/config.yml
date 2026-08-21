@@ -5,7 +5,7 @@ version: 2.1
 jobs:
   build:
     machine:
-      image: ubuntu-2004:202201-02
+      image: ubuntu-2204:current
     environment:
       ENV: CI
       GO111MODULE: "on"
@@ -14,49 +14,29 @@ jobs:
       INFLUXDB2_ONBOARDING_URL: "http://localhost:8089"
     steps:
       - checkout
-#      - run:
-#          name: check tidy
-#          command: |
-#            go mod tidy
-#            if ! git --no-pager diff --exit-code -- go.mod go.sum; then
-#              echo modules are not tidy, please run 'go mod tidy'
-#              exit 1
-#            fi
-#      - run:
-#          name: check go fmt
-#          command: |
-#            go fmt
-#            if ! git --no-pager diff --exit-code -- go.mod go.sum; then
-#              echo modules are not tidy, please run 'go fmt ./...'
-#              exit 1
-#            fi
       - run:
           name: "Create a temp directory for artifacts"
           command: |
             mkdir -p /tmp/artifacts
             mkdir -p /tmp/test-results
       - run: sudo rm -rf /usr/local/go
-      - run: wget https://golang.org/dl/go1.17.7.linux-amd64.tar.gz -O /tmp/go.tgz
+      - run: wget https://golang.org/dl/go1.22.2.linux-amd64.tar.gz -O /tmp/go.tgz
       - run: sudo tar -C /usr/local -xzf /tmp/go.tgz
       - run: go version
       - run: go get -v -t -d ./...
-      - run: go vet  ./...
-      - run: go install honnef.co/go/tools/cmd/staticcheck@latest  && staticcheck --checks='all' --tags e2e ./...
-      - run: go install golang.org/x/lint/golint@latest && golint ./...
+      - run: make lint
       - run:
           name: "Start InfluxDB service"
-          command: ./scripts/influxdb-restart.sh
+          command: make server
       - run:
-          command: |
-            go install gotest.tools/gotestsum@latest && gotestsum --junitfile /tmp/test-results/unit-tests.xml -- -race -coverprofile=coverage.txt -covermode=atomic -coverpkg '.,./api/...,./internal/.../,./log/...' -tags e2e ./...
-            go tool cover -html=coverage.txt -o /tmp/artifacts/coverage.html
+          command: make coverage
       - run:
           name: Collecting coverage reports
           command: |
             curl -Os https://uploader.codecov.io/latest/linux/codecov
             curl -Os https://uploader.codecov.io/latest/linux/codecov.SHA256SUM
             curl -Os https://uploader.codecov.io/latest/linux/codecov.SHA256SUM.sig
-            curl -s https://keybase.io/codecovsecurity/pgp_keys.asc | gpg --no-default-keyring --keyring trustedkeys.gpg --import
+            curl -k https://uploader.codecov.io/verification.gpg | gpg --no-default-keyring --keyring trustedkeys.gpg --import
             gpgv codecov.SHA256SUM.sig codecov.SHA256SUM
             shasum -a 256 -c codecov.SHA256SUM
             chmod +x ./codecov
